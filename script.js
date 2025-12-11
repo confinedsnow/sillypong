@@ -1,201 +1,161 @@
-// Advanced Pong — Clean visuals, mouse + arrow controls, CPU paddle, sounds, effects
+// Fullscreen Pong with animated ball, ping-pong racket, mouse + arrow keys, CPU, particles and scoreboard.
+
 (() => {
   const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
   const playerScoreEl = document.getElementById('playerScore');
   const cpuScoreEl = document.getElementById('cpuScore');
-  const ctx = canvas.getContext('2d', { alpha: false });
+  const centerMsg = document.getElementById('centerMsg');
 
-  // Hi-DPI support
-  function resizeCanvas() {
-    const rect = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(rect.width * dpr);
-    canvas.height = Math.round(rect.height * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // DPR & resize
+  let DPR = Math.max(1, window.devicePixelRatio || 1);
+  function resize() {
+    DPR = Math.max(1, window.devicePixelRatio || 1);
+    const w = Math.max(window.innerWidth, 300);
+    const h = Math.max(window.innerHeight, 200);
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    canvas.width = Math.round(w * DPR);
+    canvas.height = Math.round(h * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    computeSizes();
+    // clamp paddles if needed
+    leftPaddle.y = clamp(leftPaddle.y, PADDING, H() - PADDING - leftPaddle.headR * 2);
+    rightPaddle.y = clamp(rightPaddle.y, PADDING, H() - PADDING - rightPaddle.headR * 2);
   }
-  window.addEventListener('resize', resizeCanvas);
-  resizeCanvas();
+  window.addEventListener('resize', resize);
 
-  // Game constants
-  const WIDTH = () => canvas.clientWidth;
-  const HEIGHT = () => canvas.clientHeight;
-  const PADDING = 24;
-  const PADDLE_WIDTH = 12;
-  const PADDLE_HEIGHT = Math.max(80, HEIGHT() * 0.14);
-  const BALL_RADIUS = 8;
-  const MAX_SCORE = 11;
+  function W() { return canvas.clientWidth; }
+  function H() { return canvas.clientHeight; }
 
-  // Game state
-  let playerScore = 0;
-  let cpuScore = 0;
-  let running = true;
-  let paused = false;
-
-  // Input state
-  const keys = { ArrowUp: false, ArrowDown: false };
-  let mouseY = null;
-
-  // Audio: simple beep & pop using WebAudio
-  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  function beep(freq = 330, duration = 0.06, type = 'sine', gain = 0.06) {
-    const now = audioCtx.currentTime;
-    const o = audioCtx.createOscillator();
-    const g = audioCtx.createGain();
-    o.type = type;
-    o.frequency.value = freq;
-    g.gain.value = gain;
-    o.connect(g);
-    g.connect(audioCtx.destination);
-    o.start(now);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + duration);
-    o.stop(now + duration + 0.02);
-  }
-
-  // Helper: clamp
+  // Basic helpers
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const rand = (a,b) => a + Math.random() * (b - a);
 
-  // Trail & particles
-  const trails = [];
+  // Game params
+  let PADDING = 24;
+  let BALL_RADIUS = 8;
+  let MAX_SCORE = 11;
+
+  function computeSizes() {
+    PADDING = Math.max(12, H() * 0.04);
+    const headR = Math.max(26, H() * 0.06);
+    leftPaddle.headR = headR;
+    leftPaddle.handleW = Math.max(14, headR * 0.45);
+    leftPaddle.handleL = headR * 1.1;
+    rightPaddle.headR = headR;
+    rightPaddle.handleW = leftPaddle.handleW;
+    rightPaddle.handleL = leftPaddle.handleL;
+    BALL_RADIUS = Math.max(6, Math.min(14, H() * 0.02));
+  }
+
+  // Particle system
   const particles = [];
 
+  function spawnParticles(x,y,color,count=10) {
+    for (let i=0;i<count;i++){
+      particles.push({
+        x, y,
+        vx: rand(-3,3),
+        vy: rand(-2,2),
+        life: rand(30,80),
+        size: rand(1,3),
+        color
+      });
+    }
+  }
+  function updateParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.08;
+      p.life--;
+      if (p.life <= 0) particles.splice(i,1);
+    }
+  }
+  function drawParticles(ctx) {
+    for (const p of particles) {
+      ctx.beginPath();
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = Math.max(0, p.life / 80);
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Paddle (racket) class - head = circle, handle = rect
   class Paddle {
-    constructor(x, isLeft = true) {
-      this.x = x;
+    constructor(isLeft=true) {
       this.isLeft = isLeft;
-      this.width = PADDLE_WIDTH;
-      this.height = PADDLE_HEIGHT;
-      this.y = (HEIGHT() - this.height) / 2;
-      this.speed = 6;
+      this.headR = 32;
+      this.handleW = 16;
+      this.handleL = 36;
+      this.x = isLeft ? PADDING + this.headR : W() - PADDING - this.headR;
+      this.y = (H() - this.headR*2) / 2;
       this.targetY = this.y;
+      this.speed = 8;
     }
     update(dt) {
-      // Smooth movement toward targetY
+      // smooth towards target
       const dy = this.targetY - this.y;
       this.y += dy * clamp(0.12 * dt, 0, 1);
       // clamp
-      this.y = clamp(this.y, PADDING, HEIGHT() - PADDING - this.height);
+      this.y = clamp(this.y, PADDING, H() - PADDING - this.headR*2);
     }
+    center() { return { x: this.x, y: this.y + this.headR }; }
     draw(ctx) {
-      // glow rect
-      const grad = ctx.createLinearGradient(this.x, this.y, this.x + this.width, this.y + this.height);
-      grad.addColorStop(0, 'rgba(102,160,255,0.08)');
-      grad.addColorStop(1, 'rgba(80,227,194,0.06)');
-      ctx.fillStyle = grad;
-      roundRect(ctx, this.x, this.y, this.width, this.height, 6);
-      ctx.fill();
-      // inner accent
-      ctx.fillStyle = 'rgba(255,255,255,0.06)';
-      roundRect(ctx, this.x + 2, this.y + 2, this.width - 4, this.height - 4, 4);
-      ctx.fill();
-    }
-  }
-
-  class Ball {
-    constructor() {
-      this.reset(true);
-      this.trail = [];
-    }
-    reset(toRight = Math.random() < 0.5) {
-      this.x = WIDTH() / 2;
-      this.y = HEIGHT() / 2;
-      const speed = 6 + Math.random() * 2;
-      const angle = (Math.random() * Math.PI / 4) - (Math.PI / 8); // slight angle
-      this.vx = toRight ? speed * Math.cos(angle) : -speed * Math.cos(angle);
-      this.vy = speed * Math.sin(angle);
-      this.radius = BALL_RADIUS;
-      this.speed = speed;
-      this.trail = [];
-    }
-    update(dt, paddles) {
-      this.x += this.vx * (dt);
-      this.y += this.vy * (dt);
-
-      // Wall collisions (top/bottom)
-      if (this.y - this.radius <= PADDING) {
-        this.y = PADDING + this.radius;
-        this.vy *= -1;
-        beep(420, 0.045, 'sine', 0.02);
-        createWallParticles(this.x, this.y);
-      } else if (this.y + this.radius >= HEIGHT() - PADDING) {
-        this.y = HEIGHT() - PADDING - this.radius;
-        this.vy *= -1;
-        beep(420, 0.045, 'sine', 0.02);
-        createWallParticles(this.x, this.y);
-      }
-
-      // Paddle collisions
-      for (let p of paddles) {
-        if (this.collidesWithPaddle(p)) {
-          // compute relative intersection
-          const intersectY = (this.y - (p.y + p.height / 2));
-          const normalized = intersectY / (p.height / 2);
-          const bounceAngle = normalized * (Math.PI / 3); // max 60deg
-
-          const direction = p.isLeft ? 1 : -1;
-          const speedIncrease = 1.08;
-          this.speed = Math.min(18, this.speed * speedIncrease);
-          this.vx = direction * this.speed * Math.cos(bounceAngle);
-          this.vy = this.speed * Math.sin(bounceAngle);
-
-          // nudge ball out of paddle to avoid sticking
-          if (p.isLeft) this.x = p.x + p.width + this.radius + 0.5;
-          else this.x = p.x - this.radius - 0.5;
-
-          // sound & particles
-          beep(880 - Math.abs(normalized) * 280, 0.06, 'square', 0.06);
-          createPaddleParticles(this.x, this.y, normalized, p.isLeft);
-
-          break;
-        }
-      }
-
-      // append to trail
-      this.trail.push({ x: this.x, y: this.y, r: this.radius, alpha: 0.5 });
-      if (this.trail.length > 18) this.trail.shift();
-    }
-
-    collidesWithPaddle(p) {
-      // AABB vs circle
-      const closestX = clamp(this.x, p.x, p.x + p.width);
-      const closestY = clamp(this.y, p.y, p.y + p.height);
-      const dx = this.x - closestX;
-      const dy = this.y - closestY;
-      return (dx * dx + dy * dy) <= (this.radius * this.radius);
-    }
-
-    draw(ctx) {
-      // draw trail
-      for (let i = 0; i < this.trail.length; i++) {
-        const t = this.trail[i];
-        const alpha = (i / this.trail.length) * 0.35;
-        ctx.beginPath();
-        ctx.fillStyle = `rgba(80,227,194,${alpha})`;
-        ctx.arc(t.x, t.y, t.r + i * 0.6, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // core ball
-      const g = ctx.createRadialGradient(this.x - 3, this.y - 3, this.radius * 0.1, this.x, this.y, this.radius);
-      g.addColorStop(0, 'rgba(255,255,255,0.95)');
-      g.addColorStop(0.3, 'rgba(102,160,255,0.4)');
-      g.addColorStop(1, 'rgba(80,227,194,0.9)');
-
-      ctx.beginPath();
-      ctx.fillStyle = g;
-      ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-      ctx.fill();
-
-      // subtle outer glow
+      // head circle
+      const head = this.center();
+      ctx.save();
+      // subtle glow
       ctx.beginPath();
       ctx.fillStyle = 'rgba(80,227,194,0.06)';
-      ctx.arc(this.x, this.y, this.radius * 2.6, 0, Math.PI * 2);
+      ctx.arc(head.x, head.y, this.headR*1.6, 0, Math.PI*2);
       ctx.fill();
+
+      // handle rect (slightly rotated/rounded)
+      const hw = this.handleW;
+      const hl = this.handleL;
+      const handleX = this.isLeft ? head.x + this.headR*0.25 : head.x - this.headR*0.25 - hw;
+      const handleY = head.y - hw/2;
+      // shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      roundRect(ctx, handleX + 2, handleY + 4, hw, hl, hw*0.5);
+      ctx.fill();
+
+      // handle main
+      const grad = ctx.createLinearGradient(handleX, handleY, handleX + hw, handleY + hl);
+      grad.addColorStop(0, 'rgba(200,200,200,0.06)');
+      grad.addColorStop(1, 'rgba(255,255,255,0.02)');
+      ctx.fillStyle = grad;
+      roundRect(ctx, handleX, handleY, hw, hl, hw*0.5);
+      ctx.fill();
+
+      // head
+      const g = ctx.createRadialGradient(head.x - 6, head.y - 6, this.headR*0.15, head.x, head.y, this.headR);
+      g.addColorStop(0, 'rgba(255,255,255,0.95)');
+      g.addColorStop(0.25, 'rgba(102,160,255,0.25)');
+      g.addColorStop(1, 'rgba(80,227,194,0.9)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(head.x, head.y, this.headR, 0, Math.PI*2);
+      ctx.fill();
+
+      // rim
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.beginPath();
+      ctx.arc(head.x, head.y, this.headR - 1.5, 0, Math.PI*2);
+      ctx.stroke();
+
+      ctx.restore();
     }
   }
 
-  // Utility - rounded rect draw
-  function roundRect(ctx, x, y, w, h, r) {
-    const radius = Math.min(r, w / 2, h / 2);
+  function roundRect(ctx,x,y,w,h,r) {
+    const radius = Math.min(r, w/2, h/2);
     ctx.beginPath();
     ctx.moveTo(x + radius, y);
     ctx.arcTo(x + w, y, x + w, y + h, radius);
@@ -205,169 +165,259 @@
     ctx.closePath();
   }
 
-  // Particles for hits & walls
-  function createPaddleParticles(x, y, norm, left) {
-    const count = 12;
-    for (let i = 0; i < count; i++) {
-      particles.push({
-        x,
-        y,
-        vx: (Math.random() * 2 - 1) * (left ? 2 : -2),
-        vy: (Math.random() * 2 - 1) * 2 + norm * 4,
-        life: 60 + Math.random() * 30,
-        color: `rgba(${80 + Math.random() * 40}, ${200 + Math.random() * 55}, ${180 + Math.random() * 40}, 0.95)`,
-        size: 1 + Math.random() * 2
-      });
+  // Ball class
+  class Ball {
+    constructor() {
+      this.reset(true);
+      this.trail = [];
     }
-  }
-  function createWallParticles(x, y) {
-    const count = 8;
-    for (let i = 0; i < count; i++) {
-      particles.push({
-        x,
-        y,
-        vx: (Math.random() * 2 - 1) * 4,
-        vy: (Math.random() * 2 - 1) * 2,
-        life: 40 + Math.random() * 30,
-        color: `rgba(150,200,255,0.9)`,
-        size: 1 + Math.random() * 2
-      });
+    reset(toRight=true) {
+      this.x = W()/2;
+      this.y = H()/2;
+      const base = Math.max(5.5, H()/160);
+      this.speed = base + Math.random()*1.6;
+      const angle = rand(-Math.PI/8, Math.PI/8);
+      this.vx = (toRight ? 1 : -1) * this.speed * Math.cos(angle);
+      this.vy = this.speed * Math.sin(angle);
+      this.r = BALL_RADIUS;
+      this.trail = [];
     }
-  }
+    update(dt, paddles) {
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
 
-  function updateParticles() {
-    for (let i = particles.length - 1; i >= 0; i--) {
-      const p = particles[i];
-      p.x += p.vx;
-      p.y += p.vy;
-      p.vy += 0.08; // gravity-like
-      p.life--;
-      if (p.life <= 0) particles.splice(i, 1);
+      // top/bottom walls
+      if (this.y - this.r <= PADDING) {
+        this.y = PADDING + this.r;
+        this.vy *= -1;
+        spawnParticles(this.x, this.y, 'rgba(150,200,255,0.9)', 8);
+      } else if (this.y + this.r >= H() - PADDING) {
+        this.y = H() - PADDING - this.r;
+        this.vy *= -1;
+        spawnParticles(this.x, this.y, 'rgba(150,200,255,0.9)', 8);
+      }
+
+      // paddle collisions
+      for (const p of paddles) {
+        // head collision (circle)
+        const head = p.center();
+        const dx = this.x - head.x;
+        const dy = this.y - head.y;
+        const dist2 = dx*dx + dy*dy;
+        const rsum = this.r + p.headR;
+        if (dist2 <= rsum * rsum) {
+          const dist = Math.sqrt(dist2) || 0.001;
+          const nx = dx / dist;
+          const ny = dy / dist;
+          // reflect velocity
+          const dot = this.vx * nx + this.vy * ny;
+          this.vx = this.vx - 2 * dot * nx;
+          this.vy = this.vy - 2 * dot * ny;
+          // speed up a bit
+          this.speed = Math.min(22, Math.hypot(this.vx, this.vy) * 1.06);
+          const velNorm = Math.hypot(this.vx, this.vy);
+          this.vx = (this.vx / velNorm) * this.speed;
+          this.vy = (this.vy / velNorm) * this.speed;
+          // push out
+          const overlap = rsum - dist + 0.5;
+          this.x += nx * overlap;
+          this.y += ny * overlap;
+          spawnParticles(this.x, this.y, 'rgba(80,227,194,0.95)', 14);
+          break;
+        }
+
+        // handle collision (AABB vs circle)
+        const handleX = p.isLeft ? head.x + p.headR*0.25 : head.x - p.headR*0.25 - p.handleW;
+        const handleY = head.y - p.handleW/2;
+        const hx = handleX, hy = handleY, hw = p.handleW, hl = p.handleL;
+        // closest point
+        const closestX = clamp(this.x, hx, hx + hw);
+        const closestY = clamp(this.y, hy, hy + hl);
+        const ddx = this.x - closestX;
+        const ddy = this.y - closestY;
+        if (ddx*ddx + ddy*ddy <= this.r*this.r) {
+          // reflect based on side hit
+          // simple normal from closest point to ball
+          const dist = Math.sqrt(ddx*ddx + ddy*ddy) || 0.001;
+          const nx = ddx / dist;
+          const ny = ddy / dist;
+          const dot = this.vx * nx + this.vy * ny;
+          this.vx = this.vx - 2 * dot * nx;
+          this.vy = this.vy - 2 * dot * ny;
+          // speed up
+          this.speed = Math.min(22, Math.hypot(this.vx, this.vy) * 1.04);
+          const velNorm = Math.hypot(this.vx, this.vy);
+          this.vx = (this.vx / velNorm) * this.speed;
+          this.vy = (this.vy / velNorm) * this.speed;
+          spawnParticles(this.x, this.y, 'rgba(200,180,160,0.95)', 8);
+          break;
+        }
+      }
+
+      // trail
+      this.trail.push({x:this.x,y:this.y,a:1});
+      if (this.trail.length > 18) this.trail.shift();
     }
-  }
-  function drawParticles(ctx) {
-    for (let p of particles) {
+
+    draw(ctx) {
+      // trail
+      for (let i = 0; i < this.trail.length; i++){
+        const t = this.trail[i];
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(80,227,194,${(i/this.trail.length)*0.35})`;
+        ctx.arc(t.x, t.y, this.r + i*0.4, 0, Math.PI*2);
+        ctx.fill();
+      }
+      // ball core
+      const g = ctx.createRadialGradient(this.x - 3, this.y - 3, this.r*0.15, this.x, this.y, this.r);
+      g.addColorStop(0, 'rgba(255,255,255,0.95)');
+      g.addColorStop(0.25, 'rgba(102,160,255,0.25)');
+      g.addColorStop(1, 'rgba(80,227,194,0.95)');
       ctx.beginPath();
-      ctx.fillStyle = p.color.replace('0.9', Math.max(0.05, p.life / 120).toFixed(2));
-      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fillStyle = g;
+      ctx.arc(this.x, this.y, this.r, 0, Math.PI*2);
+      ctx.fill();
+
+      // outer glow
+      ctx.beginPath();
+      ctx.fillStyle = 'rgba(80,227,194,0.06)';
+      ctx.arc(this.x, this.y, this.r*2.6, 0, Math.PI*2);
       ctx.fill();
     }
   }
 
   // Game objects
-  let leftPaddle = new Paddle(PADDING, true);
-  let rightPaddle = new Paddle(() => WIDTH() - PADDING - PADDLE_WIDTH, false);
-  // fix paddle X after resize
-  function updatePaddlesX() {
-    leftPaddle.x = PADDING;
-    rightPaddle.x = WIDTH() - PADDING - PADDLE_WIDTH;
+  const leftPaddle = new Paddle(true);
+  const rightPaddle = new Paddle(false);
+  function resetPaddles() {
+    leftPaddle.x = PADDING + leftPaddle.headR;
+    rightPaddle.x = W() - PADDING - rightPaddle.headR;
+    leftPaddle.y = (H() - leftPaddle.headR*2)/2;
+    rightPaddle.y = (H() - rightPaddle.headR*2)/2;
+    leftPaddle.targetY = leftPaddle.y;
+    rightPaddle.targetY = rightPaddle.y;
   }
-  updatePaddlesX();
 
   let ball = new Ball();
 
-  // CPU AI
-  function updateAI(dt) {
-    // CPU tracks the ball with some lag and max speed
-    const target = ball.y - rightPaddle.height / 2;
-    // move towards target but limit speed
-    const diff = target - rightPaddle.y;
-    const maxStep = 4.6 * dt;
-    rightPaddle.targetY = rightPaddle.y + clamp(diff, -maxStep, maxStep);
-  }
-
-  // Input handlers
-  window.addEventListener('keydown', (e) => {
-    if (e.key === ' ' || e.code === 'Space') {
+  // input
+  const keys = { ArrowUp:false, ArrowDown:false };
+  window.addEventListener('keydown', e => {
+    if (e.code === 'Space') {
       paused = !paused;
-      if (!paused) audioCtx.resume();
-      e.preventDefault();
+      if (!paused) centerMsg.style.opacity = '0';
     }
-    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-      keys[e.key] = true;
-    }
+    if (e.code === 'ArrowUp' || e.code === 'ArrowDown') keys[e.code] = true;
   });
-  window.addEventListener('keyup', (e) => {
-    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-      keys[e.key] = false;
-    }
+  window.addEventListener('keyup', e => {
+    if (e.code === 'ArrowUp' || e.code === 'ArrowDown') keys[e.code] = false;
   });
-
-  // Mouse control: move paddle based on y relative to canvas
-  canvas.addEventListener('mousemove', (e) => {
+  // mouse
+  let mouseY = null;
+  canvas.addEventListener('mousemove', e => {
     const rect = canvas.getBoundingClientRect();
     mouseY = e.clientY - rect.top;
   });
-  // Click to serve if paused or after score
-  canvas.addEventListener('click', (e) => {
-    audioCtx.resume();
+  canvas.addEventListener('click', e => {
     if (!running) {
-      // reset full game
-      playerScore = 0;
-      cpuScore = 0;
+      playerScore = 0; cpuScore = 0;
       playerScoreEl.textContent = playerScore;
       cpuScoreEl.textContent = cpuScore;
       running = true;
     }
     if (paused) paused = false;
-    // if ball near center and stopped, serve toward mouse side
+    centerMsg.style.opacity = '0';
     const rect = canvas.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
-    ball.reset(clickX > WIDTH() / 2);
+    ball.reset(clickX > W()/2);
   });
 
-  // Game loop
+  // simple beep using WebAudio
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  function beep(freq=440, t=0.05, type='sine', vol=0.04){
+    const now = audioCtx.currentTime;
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    g.gain.value = vol;
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(now);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + t);
+    o.stop(now + t + 0.02);
+  }
+
+  // AI
+  function updateAI(dt) {
+    // basic tracking with clamped speed
+    const target = ball.y - rightPaddle.headR;
+    const diff = target - rightPaddle.y;
+    const maxStep = 3.6 * dt;
+    rightPaddle.targetY = rightPaddle.y + clamp(diff, -maxStep, maxStep);
+  }
+
+  // scoring
+  let playerScore = 0;
+  let cpuScore = 0;
+  let running = true;
+  let paused = false;
+
+  // main loop
   let last = performance.now();
   function loop(now) {
     const dtms = Math.min(40, now - last);
-    const dt = dtms / (1000 / 60); // normalized to 60fps steps
+    const dt = dtms / (1000/60);
     last = now;
 
     if (!paused && running) {
-      // Input: keyboard moves left paddle
+      // input keyboard
       const kbSpeed = 6;
       if (keys.ArrowUp) leftPaddle.targetY -= kbSpeed * dt;
       if (keys.ArrowDown) leftPaddle.targetY += kbSpeed * dt;
-
-      // Mouse moves override target to a degree
+      // mouse moves stronger
       if (mouseY !== null) {
-        const rect = canvas.getBoundingClientRect();
-        // mouseY is in CSS pixels; convert directly to target center
-        const desired = mouseY - leftPaddle.height / 2;
-        // blend keyboard and mouse: mouse sets stronger target
+        const desired = mouseY - leftPaddle.headR;
         leftPaddle.targetY = leftPaddle.targetY * 0.08 + desired * 0.92;
       }
 
-      // Update AI
-      updateAI(dt);
-
-      // Update objects
+      // update
       leftPaddle.update(dt);
+      updateAI(dt);
       rightPaddle.update(dt);
       ball.update(dt, [leftPaddle, rightPaddle]);
       updateParticles();
 
-      // Score conditions
-      if (ball.x < -40) {
-        // CPU scores
+      // score checks
+      if (ball.x < -60) {
         cpuScore++;
         cpuScoreEl.textContent = cpuScore;
-        beep(120, 0.18, 'sine', 0.08);
+        spawnParticles(ball.x + 60, ball.y, 'rgba(255,100,120,0.9)', 24);
+        beep(120,0.12,'sine',0.08);
         if (cpuScore >= MAX_SCORE) {
-          running = false;
+          running = false; paused = true;
+          centerMsg.textContent = 'CPU Wins — Click to Restart';
+          centerMsg.style.opacity = '1';
+        } else {
+          ball.reset(true);
           paused = true;
+          centerMsg.textContent = 'Click to serve';
+          centerMsg.style.opacity = '1';
         }
-        ball.reset(true);
-      } else if (ball.x > WIDTH() + 40) {
-        // Player scores
+      } else if (ball.x > W() + 60) {
         playerScore++;
         playerScoreEl.textContent = playerScore;
-        beep(420, 0.18, 'sine', 0.08);
+        spawnParticles(ball.x - 60, ball.y, 'rgba(100,255,160,0.95)', 24);
+        beep(420,0.12,'sine',0.08);
         if (playerScore >= MAX_SCORE) {
-          running = false;
+          running = false; paused = true;
+          centerMsg.textContent = 'You Win! — Click to Restart';
+          centerMsg.style.opacity = '1';
+        } else {
+          ball.reset(false);
           paused = true;
+          centerMsg.textContent = 'Click to serve';
+          centerMsg.style.opacity = '1';
         }
-        ball.reset(false);
       }
     }
 
@@ -376,22 +426,20 @@
   }
 
   function drawField(ctx) {
-    // background already set via CSS; draw side paddings
-    ctx.clearRect(0, 0, WIDTH(), HEIGHT());
-
-    // subtle border lines (top / bottom)
+    ctx.clearRect(0,0,W(),H());
+    // top/bottom padding bands
     ctx.fillStyle = 'rgba(255,255,255,0.02)';
-    ctx.fillRect(0, 0, WIDTH(), PADDING);
-    ctx.fillRect(0, HEIGHT() - PADDING, WIDTH(), PADDING);
+    ctx.fillRect(0,0,W(),PADDING);
+    ctx.fillRect(0,H()-PADDING,W(),PADDING);
 
-    // dotted center line
+    // center dashed line
     ctx.save();
-    ctx.globalAlpha = 0.18;
+    ctx.globalAlpha = 0.14;
     ctx.fillStyle = 'rgba(255,255,255,0.06)';
-    const dashH = 12;
-    const gap = 10;
-    const cx = WIDTH() / 2 - 1;
-    for (let y = PADDING + 12; y < HEIGHT() - PADDING - 12; y += dashH + gap) {
+    const dashH = Math.max(10, H()*0.02);
+    const gap = dashH * 0.6;
+    const cx = W()/2 - 1;
+    for (let y = PADDING + 12; y < H() - PADDING - 12; y += dashH + gap) {
       ctx.fillRect(cx, y, 2, dashH);
     }
     ctx.restore();
@@ -399,57 +447,50 @@
 
   function draw() {
     drawField(ctx);
-
-    // draw trail backgrounds (glows)
     // paddles
     leftPaddle.draw(ctx);
     rightPaddle.draw(ctx);
-
-    // ball and effects
+    // particles
     drawParticles(ctx);
+    // ball
     ball.draw(ctx);
 
-    // small HUD overlays (paused or end)
+    // paused overlay on canvas (light)
     if (paused) {
       ctx.save();
-      ctx.fillStyle = 'rgba(2,6,10,0.6)';
-      ctx.fillRect(WIDTH() / 2 - 170, HEIGHT() / 2 - 48, 340, 96);
-      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.fillStyle = 'rgba(2,6,10,0.45)';
+      ctx.fillRect(W()/2 - 180, H()/2 - 48, 360, 96);
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
       ctx.font = '18px Inter, Arial';
       ctx.textAlign = 'center';
       if (!running) {
-        ctx.fillText('Game Over', WIDTH() / 2, HEIGHT() / 2 - 4);
+        ctx.fillText('Game Over', W()/2, H()/2 - 4);
         ctx.font = '14px Inter, Arial';
-        ctx.fillText('Click to restart', WIDTH() / 2, HEIGHT() / 2 + 18);
+        ctx.fillText('Click to restart', W()/2, H()/2 + 18);
       } else {
-        ctx.fillText('Paused', WIDTH() / 2, HEIGHT() / 2 - 4);
+        ctx.fillText('Paused', W()/2, H()/2 - 4);
         ctx.font = '14px Inter, Arial';
-        ctx.fillText('Press Space to resume • Click to serve', WIDTH() / 2, HEIGHT() / 2 + 18);
+        ctx.fillText('Press Space to resume • Click to serve', W()/2, H()/2 + 18);
       }
       ctx.restore();
     }
   }
 
-  // Kick off
-  requestAnimationFrame(loop);
+  // init
+  resize();
+  resetPaddles();
+  ball.reset(true);
+  playerScore = 0; cpuScore = 0;
+  playerScoreEl.textContent = playerScore;
+  cpuScoreEl.textContent = cpuScore;
+  centerMsg.style.opacity = '1';
 
-  // Ensure responsive paddle sizes and positions on load & resize
-  function reflow() {
-    resizeCanvas();
-    updatePaddlesX();
-    leftPaddle.height = Math.max(60, HEIGHT() * 0.14);
-    rightPaddle.height = leftPaddle.height;
-    leftPaddle.y = clamp(leftPaddle.y, PADDING, HEIGHT() - PADDING - leftPaddle.height);
-    rightPaddle.y = clamp(rightPaddle.y, PADDING, HEIGHT() - PADDING - rightPaddle.height);
-    ball.x = WIDTH() / 2;
-    ball.y = HEIGHT() / 2;
-  }
-  window.addEventListener('resize', reflow);
-
-  // initial focus for keyboard
+  // ensure canvas can receive keyboard
+  canvas.setAttribute('tabindex', '0');
   canvas.focus();
 
-  // Expose small API on window for debugging (optional)
-  window.__pong = { canvas, leftPaddle, rightPaddle, ball, play: () => (paused = false) };
+  requestAnimationFrame(loop);
 
+  // expose for debugging (optional)
+  window.__pong = { canvas, leftPaddle, rightPaddle, ball };
 })();
