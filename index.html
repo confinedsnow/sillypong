@@ -3,35 +3,25 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Advanced Pong — Clean & Smooth</title>
+  <title>Fullscreen Pong — Ping Pong Racket</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="app">
-    <header class="hud">
-      <div class="scoreboard">
-        <div class="player score" id="playerScore">0</div>
-        <div class="center-text">
-          <div class="title">PONG</div>
-          <div class="subtitle">Left: You • Right: CPU</div>
-        </div>
-        <div class="cpu score" id="cpuScore">0</div>
+  <canvas id="gameCanvas" tabindex="0" aria-label="Pong game canvas"></canvas>
+
+  <div class="overlay top">
+    <div class="scoreboard">
+      <div class="player score" id="playerScore">0</div>
+      <div class="center-text">
+        <div class="title">PONG</div>
+        <div class="subtitle">You (Left) • CPU (Right)</div>
       </div>
-
-      <div class="controls">
-        <div>Controls: Move mouse to move paddle • Arrow ↑/↓ to move</div>
-        <div>Space to Pause / Resume • Click canvas to serve</div>
-      </div>
-    </header>
-
-    <main class="game-area">
-      <canvas id="gameCanvas" tabindex="0" aria-label="Pong game canvas"></canvas>
-    </main>
-
-    <footer class="footer">
-      <div class="small">Made with HTML5 Canvas • Smooth visuals & effects</div>
-    </footer>
+      <div class="cpu score" id="cpuScore">0</div>
+    </div>
+    <div class="controls">Mouse or Arrow ↑/↓ to move • Space to Pause • Click to Serve / Restart</div>
   </div>
+
+  <div class="overlay center" id="centerMsg" aria-hidden="true">Click to serve</div>
 
   <script src="script.js"></script>
 </body>
